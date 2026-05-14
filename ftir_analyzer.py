@@ -70,8 +70,13 @@ def load_csv(filepath):
 
         if ';' in line:
             parts = line.split(';')
+        elif '\t' in line:
+            parts = line.split('\t')
         else:
+            # Fallback to comma, but also handle cases where it might be space-separated
             parts = line.split(',')
+            if len(parts) < 2:
+                parts = line.split()
 
         if len(parts) < 2:
             continue
