@@ -54,7 +54,7 @@ Wait for it to finish downloading (you'll see a bunch of loading bars).
 3. Right-click that folder and select **"Copy as path"**.
 4. In the black window, type `cd` followed by a space, then **right-click** to paste your path. It should look something like this:
    ```cmd
-   cd "C:\Users\Name\Desktop\FTIR-Project"
+   cd "C:\Users\Name\Desktop\ftir-analyzer"
    ```
 5. Press `Enter`. Now you are in the right place!
 6. Finally, type this and press `Enter`:
