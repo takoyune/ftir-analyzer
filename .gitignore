@@ -1,0 +1,8 @@
+# Ignore all CSV data files and generated output files
+*.CSV
+*.csv
+*.png
+*.jpg
+*.pdf
+output.txt
+__pycache__/
