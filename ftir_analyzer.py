@@ -21,6 +21,8 @@ import glob
 import warnings
 warnings.filterwarnings('ignore')
 
+from ftir_database import FUNCTIONAL_GROUPS, COMPOUND_RULES
+
 # ─────────────────────────────────────────────────────────────────────
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────────────
@@ -31,42 +33,6 @@ SAVGOL_WINDOW = 31       # Must be odd
 SAVGOL_POLY_ORDER = 3
 PEAK_PROMINENCE = 3.0    # %T prominence threshold for "main" peaks
 PEAK_MIN_DISTANCE = 30   # Minimum distance between peaks (in data points)
-
-# ─────────────────────────────────────────────────────────────────────
-# FUNCTIONAL GROUP REFERENCE TABLE
-# ─────────────────────────────────────────────────────────────────────
-FUNCTIONAL_GROUPS = [
-    # (High, Low, Bond, Group/Compound Class)
-    (3650, 3200, "O–H stretch (H-bonded)", "Alcohol / Phenol"),
-    (3500, 3300, "N–H stretch", "Primary / Secondary Amine or Amide"),
-    (3300, 3250, "≡C–H stretch", "Terminal Alkyne"),
-    (3300, 2500, "O–H stretch (broad)", "Carboxylic Acid"),
-    (3150, 3000, "=C–H stretch", "Aromatic / Alkene"),
-    (3000, 2850, "C–H stretch", "Alkane (CH₃, CH₂)"),
-    (2830, 2695, "C–H stretch (Fermi resonance)", "Aldehyde"),
-    (2600, 2550, "S–H stretch", "Thiol"),
-    (2260, 2220, "C≡N stretch", "Nitrile"),
-    (2260, 2100, "C≡C stretch", "Alkyne"),
-    (1830, 1740, "C=O stretch", "Anhydride"),
-    (1750, 1735, "C=O stretch", "Ester"),
-    (1740, 1720, "C=O stretch", "Aldehyde"),
-    (1725, 1700, "C=O stretch", "Ketone / Carboxylic Acid"),
-    (1690, 1650, "C=O stretch", "Amide"),
-    (1680, 1620, "C=C stretch", "Alkene"),
-    (1650, 1550, "N–H bend", "Amine / Amide"),
-    (1600, 1450, "C=C ring stretch", "Aromatic Ring"),
-    (1560, 1515, "N–O asymmetric stretch", "Nitro Compound"),
-    (1470, 1370, "C–H bend", "Alkane (CH₂, CH₃)"),
-    (1385, 1345, "N–O symmetric stretch", "Nitro Compound"),
-    (1300, 1000, "C–O stretch", "Alcohol / Ether / Ester / Acid"),
-    (1250, 1020, "C–N stretch", "Amine"),
-    (1400, 1000, "C–F stretch", "Fluoroalkane"),
-    (1000, 650,  "=C–H out-of-plane bend", "Alkene"),
-    (900, 690,   "=C–H out-of-plane bend", "Aromatic Ring"),
-    (800, 600,   "C–Cl stretch", "Chloroalkane"),
-    (600, 500,   "C–Br stretch", "Bromoalkane"),
-]
-
 
 def load_csv(filepath):
     """Load FTIR CSV with auto-detection of delimiter and decimal format."""
@@ -224,6 +190,33 @@ def identify_functional_groups(peak_wavenumbers):
                 'Functional Group': 'Fingerprint region / Unassigned',
             })
     return pd.DataFrame(results)
+
+def predict_compound(found_bonds):
+    """Predict compound class based on the combination of identified bonds."""
+    predictions = []
+    
+    for rule in COMPOUND_RULES:
+        # Check if all required bonds are in the found_bonds list
+        has_all_reqs = all(any(req in b for b in found_bonds) for req in rule["requires"])
+        
+        # Check if any excluded bonds are in the found_bonds list
+        has_no_excludes = not any(any(exc in b for b in found_bonds) for exc in rule["excludes"])
+        
+        if has_all_reqs and has_no_excludes:
+            predictions.append(rule["compound"])
+            
+    if not predictions:
+        # Fallbacks for complex mixtures or partial matches
+        if any("O–H stretch" in b for b in found_bonds):
+            predictions.append("Unknown Oxygenated Compound (contains O-H)")
+        elif any("C=O stretch" in b for b in found_bonds):
+            predictions.append("Unknown Carbonyl Compound")
+        elif any("C–O stretch" in b for b in found_bonds):
+            predictions.append("Unknown Oxygenated Compound (contains C-O)")
+        else:
+            predictions.append("Unidentified / Complex Mixture")
+            
+    return predictions
 
 
 def plot_spectrum(wavenumber, transmittance, peaks, peak_wn, peak_t,
@@ -462,10 +455,23 @@ def analyze_file(filepath, custom_name=None, output_dir=None, force_y_type=None,
     table_str = fg_table.to_string(index=False)
     # Safely print, replacing any problematic chars
     print(table_str.encode('ascii', 'replace').decode('ascii'))
+    
+    # [SMART FEATURE] Predict Compound
+    found_bonds = fg_table['Bond'].unique().tolist()
+    predictions = predict_compound(found_bonds)
+    
+    print(f"\n  [SMART PREDICTION] Based on spectral analysis, the compound is likely:")
+    for pred in predictions:
+        print(f"   -> {pred}")
 
     # Save table
     table_path = os.path.join(output_dir, f"{name_no_ext}_functional_groups.csv")
-    fg_table.to_csv(table_path, index=False)
+    
+    # Append prediction to the bottom of the CSV
+    with open(table_path, 'w', encoding='utf-8') as f:
+        fg_table.to_csv(f, index=False)
+        f.write(f"\nAI PREDICTION:,{ ' OR '.join(predictions) }\n")
+        
     print(f"\n  [OK] Table saved -> {table_path}")
 
     # Generate plot
