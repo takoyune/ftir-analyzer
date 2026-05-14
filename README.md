@@ -48,17 +48,27 @@ pip install pandas numpy matplotlib scipy
 ```
 Wait for it to finish downloading (you'll see a bunch of loading bars).
 
-### Step 4: Run the Analyzer
-1. In the Command Prompt, navigate to the folder where you saved this script using the `cd` command. For example:
+### Step 4: Run the Analyzer 🚀
+1. Now, you need to tell the Command Prompt where your script is.
+2. Find the folder where you saved `ftir_analyzer.py`.
+3. Right-click that folder and select **"Copy as path"**.
+4. In the black window, type `cd` followed by a space, then **right-click** to paste your path. It should look something like this:
    ```cmd
-   cd "D:\code iwan\testing"
+   cd "C:\Users\Name\Desktop\FTIR-Project"
    ```
-2. Type the following command and press `Enter` to launch the Analyzer:
+5. Press `Enter`. Now you are in the right place!
+6. Finally, type this and press `Enter`:
    ```cmd
    python ftir_analyzer.py
    ```
-3. The premium colored wizard will launch! 
-4. **The best part:** When it asks for your file path, just press `ENTER` on your keyboard without typing anything. A standard Windows File Explorer will pop up so you can simply click on your `.CSV` file!
+
+---
+
+## ✨ Why this is awesome for everyone:
+- **No Coding Needed:** The script talks to you in plain English.
+- **Easy File Picking:** You don't have to type long file names. Just hit `Enter` and pick your file like you do in Word or Excel.
+- **Auto-Magic Analysis:** It automatically knows if your data is "Absorbance" or "Transmittance".
+- **Professional Results:** It saves a beautiful graph and a spreadsheet report automatically in your folder!
 
 ---
 
