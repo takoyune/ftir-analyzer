@@ -1,56 +1,84 @@
-# FTIR Spectroscopy Analyzer
+<div align="center">
+  <h1>🔬 FTIR Expert System - Premium Edition 🚀</h1>
+  <p><i>A production-grade, AI-driven pipeline for analyzing Fourier Transform Infrared (FTIR) spectroscopy datasets.</i></p>
+</div>
 
-An automated, smart Python pipeline for analyzing Fourier Transform Infrared (FTIR) spectroscopy datasets. 
+---
 
-This tool automatically detects whether your data is in Absorbance (A) or Transmittance (%T), performs noise-reduction, applies baseline correction, identifies key functional groups, and generates publication-quality visualization plots.
+This tool has been completely overhauled from a simple parser into an **Intelligent Spectroscopy Expert System**. Featuring advanced mathematical noise handling, natural language diagnostic insights, dynamic signature matching, and stunning publication-ready dashboards.
 
-## Features
+## 🌟 Premium Features
 
-- **Smart Detection**: Automatically determines if input data is `%T` or `Absorbance`.
-- **Automated Conversion**: Calculates `%T = 10^(2 - A)` if Absorbance data is detected.
-- **Spectrum Quality Scoring**: Estimates Signal-to-Noise Ratio (SNR) and provides a qualitative score (Excellent, Good, Fair, Poor).
-- **Intelligent Peak Picking**: Uses prominence-based algorithms to find main troughs while ignoring electronic noise.
-- **Functional Group Identification**: Cross-references identified peaks with a chemical bond database to identify likely functional groups (e.g., C=O stretches, O-H bonds).
-- **Publication-Ready Plots**: Generates high-resolution PNGs with inverted X-axes, annotated peaks, and clean scientific styling.
+### 🧠 Dedicated AI Expert System (`ftir_ai.py`)
+- **Natural Language Diagnostics:** Acts like a human spectroscopist. Instead of just listing peaks, the AI generates readable `[AI INSIGHTS]` (e.g., flagging the presence of complex aromatic systems or specific carbonyl groups).
+- **Smart Override Logic:** If the AI matches an exact compound fingerprint with high confidence (>70%), it intelligently suppresses generic class guesses to give you a definitive answer.
+- **Dynamic Tolerance Matching:** Physically models reality. Sharp peaks require strict matching (`±30 cm⁻¹`), while broad structural bands (like O-H stretches) automatically expand their search windows (`±150 cm⁻¹`) so they are never missed.
 
-## Requirements
+### 📐 Advanced Mathematical Preprocessing
+- **Asymmetric Least Squares (AsLS) Baseline Correction:** Replaced naive polynomial fitting with the industry-standard AsLS algorithm (`lam=1e10`). It acts as an elastic band that flawlessly flattens background drift and slope without erasing massive, broad spectral bumps.
+- **Adaptive Noise & Prominence Filtering:** Dynamically scales its peak-detection thresholds based on the signal-to-noise ratio of your specific file, dropping digital spikes and retaining true molecular signals.
 
-Ensure you have Python installed along with the following dependencies:
+### 📊 Publication-Quality Analytics Dashboard
+- **Embedded Grid Layout:** The generated `.png` isn't just a graph anymore. It uses advanced Matplotlib `GridSpec` to render a beautiful data table of your top functional groups directly beneath the spectrum.
+- **Live PubChem API Integration:** When the AI identifies a specific chemical, the script actively queries the official PubChem REST API, downloads the 2D molecular structure, and renders it directly into the bottom right corner of your plot!
 
-```bash
+### 💻 Premium User Experience
+- **Native GUI File Explorer:** No more typing paths. Just hit `ENTER` in the terminal and a sleek Tkinter File Chooser pops up.
+- **ANSI Color Engine:** The CLI wizard has been completely redesigned with a vibrant cyan, green, and yellow interface that highlights AI insights and predictions in real-time.
+- **Smart Format Detection:** Automatically detects if your data is Absorbance or Transmittance based on maximum scale, and seamlessly converts it.
+
+---
+
+## 🚀 Absolute Beginner's Guide (How to Use)
+
+Never used a command prompt or Python before? No problem! Follow these exact steps:
+
+### Step 1: Install Python
+1. Download and install **Python 3** from [python.org](https://www.python.org/downloads/).
+2. **CRITICAL:** During installation, make sure to check the box that says **"Add Python to PATH"** before clicking Install.
+
+### Step 2: Open the Command Prompt
+1. Press the `Windows Key` on your keyboard, type `cmd`, and press `Enter`. 
+2. A black window (the Command Prompt) will open.
+
+### Step 3: Install Required Libraries
+Copy and paste the following line into the black window and press `Enter`:
+```cmd
 pip install pandas numpy matplotlib scipy
 ```
+Wait for it to finish downloading (you'll see a bunch of loading bars).
 
-## Usage
+### Step 4: Run the Analyzer
+1. In the Command Prompt, navigate to the folder where you saved this script using the `cd` command. For example:
+   ```cmd
+   cd "D:\code iwan\testing"
+   ```
+2. Type the following command and press `Enter` to launch the Analyzer:
+   ```cmd
+   python ftir_analyzer.py
+   ```
+3. The premium colored wizard will launch! 
+4. **The best part:** When it asks for your file path, just press `ENTER` on your keyboard without typing anything. A standard Windows File Explorer will pop up so you can simply click on your `.CSV` file!
 
-You can run the script directly from your terminal. The script now includes a Command Line Interface (CLI) for flexible usage.
+---
 
-### 1. Process a Specific File
-If you want to analyze a single `.CSV` file and optionally give it a custom name for the plot title:
-
-```bash
-python ftir_analyzer.py --file "path/to/your/data.CSV" --name "My Custom Sample"
-```
-
-### 2. Process an Entire Directory
-If you have a folder full of `.CSV` files, you can process them all in one go:
-
-```bash
+## 💻 Advanced Command Line Usage
+For power-users, you can bypass the interactive wizard by passing arguments directly:
+```cmd
+python ftir_analyzer.py --file "path/to/data.CSV"
 python ftir_analyzer.py --dir "path/to/folder"
 ```
 
-### 3. Save Outputs to a Specific Folder
-By default, the script saves the generated plots (`.png`) and functional group tables (`.csv`) in the same folder as the input data. You can redirect these outputs to a specific folder:
+---
 
-```bash
-python ftir_analyzer.py --file "data.CSV" --out "results_folder/"
-```
+## 📂 Understanding the Outputs
 
-## Understanding the Output
+For every analysis, the engine outputs two highly-detailed files:
 
-For every input `.CSV` file, the script generates two files:
+1. **`[Name]_FTIR_spectrum.png`**: The ultimate analytics dashboard. Contains the shaded FTIR spectrum graph, the top 10 functional groups table, and (if successfully identified) the 2D molecular structure of the predicted compound.
+2. **`[Name]_functional_groups.csv`**: The complete raw data table containing wavenumbers, bonds, assigned groups, and confidence scores. It now includes the full AI Diagnostic block and final predictions appended to the bottom.
 
-1. **`[Name]_FTIR_spectrum.png`**: A high-resolution plot of the spectrum.
-2. **`[Name]_functional_groups.csv`**: A table listing the identified wavenumbers, their chemical bonds, and functional groups.
-
-*Note: The script is designed to handle `.CSV` files with either comma (`,`) or dot (`.`) decimal separators, and semicolon (`;`) or comma (`,`) column delimiters.*
+---
+<div align="center">
+  <i>Built for the Modern Spectroscopist.</i>
+</div>

@@ -14,14 +14,20 @@ matplotlib.use('Agg')  # Non-interactive backend for saving
 import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator, MultipleLocator
 from scipy.signal import savgol_filter, find_peaks
+from scipy.sparse import diags
+from scipy.sparse.linalg import spsolve
 from scipy.ndimage import uniform_filter1d
 import os
 import argparse
 import glob
 import warnings
+import urllib.request
+import urllib.parse
+import io
+import matplotlib.image as mpimg
 warnings.filterwarnings('ignore')
 
-from ftir_database import FUNCTIONAL_GROUPS, COMPOUND_RULES
+from ftir_ai import FTIRExpertSystem
 
 # ─────────────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -73,8 +79,11 @@ def load_csv(filepath):
                 wn_str = wn_str.replace(',', '.')
                 abs_str = abs_str.replace(',', '.')
 
-            wavenumbers.append(float(wn_str))
-            absorbances.append(float(abs_str))
+            wn_val = float(wn_str)
+            abs_val = float(abs_str)
+            
+            wavenumbers.append(wn_val)
+            absorbances.append(abs_val)
         except ValueError:
             continue
 
@@ -140,97 +149,89 @@ def smooth_spectrum(y, window=SAVGOL_WINDOW, polyorder=SAVGOL_POLY_ORDER):
     return savgol_filter(y, window_length=window, polyorder=polyorder)
 
 
-def baseline_correction(wavenumber, transmittance):
+def baseline_correction_asls(y, lam=1e10, p=0.01, max_iter=15, data_type='Transmittance'):
     """
-    Simple polynomial baseline correction.
-    Fits a polynomial to the upper envelope and subtracts offset.
+    Advanced Asymmetric Least Squares (AsLS) Baseline Correction.
+    Adapts intelligently to Transmittance (baseline on top) or Absorbance (baseline on bottom).
     """
-    # Use a low-order polynomial fit to the data
-    coeffs = np.polyfit(wavenumber, transmittance, deg=2)
-    baseline = np.polyval(coeffs, wavenumber)
-
-    # Shift so maximum transmittance ≈ 100%
-    corrected = transmittance - baseline + 100
-    corrected = np.clip(corrected, 0, 120)
-    return corrected
+    n = len(y)
+    D = diags([1, -2, 1], [0, 1, 2], shape=(n - 2, n))
+    DTD = D.T @ D
+    w = np.ones(n)
+    baseline = y.copy()
+    
+    # In Transmittance, baseline is at ~100%, so we heavily penalize baseline dipping BELOW data
+    # In Absorbance, baseline is at ~0, so we heavily penalize baseline spiking ABOVE data
+    actual_p = 0.99 if data_type == 'Transmittance' else p
+    
+    for _ in range(max_iter):
+        W = diags(w)
+        # Convert to CSC format for efficient solving and to suppress SparseEfficiencyWarning
+        matrix_to_solve = (W + lam * DTD).tocsc()
+        baseline = spsolve(matrix_to_solve, w * y)
+        w = np.where(y > baseline, actual_p, 1 - actual_p)
+        
+    if data_type == 'Transmittance':
+        # Flatten and align to 100% T
+        corrected = y - baseline + 100
+        return np.clip(corrected, 0, 120), baseline
+    else:
+        # Flatten and align to 0 Absorbance
+        corrected = y - baseline
+        return np.clip(corrected, 0, None), baseline
 
 
 def find_main_peaks(wavenumber, y_data, data_type='Transmittance', prominence=PEAK_PROMINENCE, distance=PEAK_MIN_DISTANCE):
-    """Identify major absorption peaks."""
+    """Identify major absorption peaks using adaptive noise thresholding."""
     if data_type == 'Transmittance':
         signal_for_peaks = -y_data
-        actual_prominence = prominence
+        base_prominence = prominence
     else:
         signal_for_peaks = y_data
-        actual_prominence = max(0.01, prominence * 0.015)
+        base_prominence = max(0.01, prominence * 0.015)
 
-    peaks, properties = find_peaks(signal_for_peaks, prominence=actual_prominence, distance=distance)
+    # 1. Adaptive Prominence: Must be at least 2% of the total signal dynamic range
+    signal_range = np.max(signal_for_peaks) - np.min(signal_for_peaks)
+    adaptive_prominence = max(base_prominence, signal_range * 0.02)
 
+    # 2. Find peaks with width constraint to ignore 1-point noise spikes
+    # Broad peaks (like O-H) have very large width but low prominence
+    peaks, properties = find_peaks(
+        signal_for_peaks, 
+        prominence=adaptive_prominence, 
+        distance=distance,
+        width=2  # Prevents infinitesimally sharp noise spikes
+    )
+
+    if len(peaks) == 0:
+        return np.array([]), np.array([]), np.array([])
+
+    # 3. Sort by prominence (most prominent first)
     sorted_idx = np.argsort(-properties['prominences'])
     peaks = peaks[sorted_idx]
+    prominences = properties['prominences'][sorted_idx]
 
-    peak_wavenumbers = wavenumber[peaks]
-    peak_y = y_data[peaks]
-
-    return peaks, peak_wavenumbers, peak_y
-
-
-def identify_functional_groups(peak_wavenumbers):
-    """Match peak wavenumbers to functional groups."""
-    results = []
-    for wn in peak_wavenumbers:
-        matched = False
-        for wn_high, wn_low, bond, group in FUNCTIONAL_GROUPS:
-            if wn_low <= wn <= wn_high:
-                results.append({
-                    'Wavenumber (cm⁻¹)': f'{wn:.1f}',
-                    'Bond': bond,
-                    'Functional Group': group,
-                })
-                matched = True
-                break
-        if not matched:
-            results.append({
-                'Wavenumber (cm⁻¹)': round(wn, 1),
-                'Bond': '—',
-                'Functional Group': 'Fingerprint region / Unassigned'
-            })
-            
-    if not results:
-        return pd.DataFrame(columns=['Wavenumber (cm⁻¹)', 'Bond', 'Functional Group'])
-        
-    return pd.DataFrame(results)
-
-def predict_compound(found_bonds):
-    """Predict compound class based on the combination of identified bonds."""
-    predictions = []
+    # 4. Smart Filtering: Drop peaks that are extremely tiny compared to the absolute largest peak
+    max_prom = prominences[0]
+    # Lowered threshold to 3% to catch broad, less prominent O-H stretches
+    significant_peaks = [p for p, prom in zip(peaks, prominences) if prom >= max_prom * 0.03]
     
-    for rule in COMPOUND_RULES:
-        # Check if all required bonds are in the found_bonds list
-        has_all_reqs = all(any(req in b for b in found_bonds) for req in rule["requires"])
-        
-        # Check if any excluded bonds are in the found_bonds list
-        has_no_excludes = not any(any(exc in b for b in found_bonds) for exc in rule["excludes"])
-        
-        if has_all_reqs and has_no_excludes:
-            predictions.append(rule["compound"])
-            
-    if not predictions:
-        # Fallbacks for complex mixtures or partial matches
-        if any("O–H stretch" in b for b in found_bonds):
-            predictions.append("Unknown Oxygenated Compound (contains O-H)")
-        elif any("C=O stretch" in b for b in found_bonds):
-            predictions.append("Unknown Carbonyl Compound")
-        elif any("C–O stretch" in b for b in found_bonds):
-            predictions.append("Unknown Oxygenated Compound (contains C-O)")
-        else:
-            predictions.append("Unidentified / Complex Mixture")
-            
-    return predictions
+    # 5. Cap at top 35 most important peaks to avoid cluttering but preserve important broad bands
+    peaks = np.array(significant_peaks[:35])
+
+    # Re-sort the final filtered peaks by wavenumber (left to right) for consistency
+    final_peaks_sorted = np.sort(peaks)
+
+    peak_wavenumbers = wavenumber[final_peaks_sorted]
+    peak_y = y_data[final_peaks_sorted]
+
+    return final_peaks_sorted, peak_wavenumbers, peak_y
+
 
 
 def plot_spectrum(wavenumber, y_data, peaks, peak_wn, peak_y,
-                  title, output_path, data_type='Transmittance'):
+                  title, output_path, data_type='Transmittance',
+                  fg_table=None, top_compound=None):
     """Generate a publication-quality FTIR spectrum plot."""
 
     # ── Style Setup ──────────────────────────────────────────────────
@@ -255,10 +256,66 @@ def plot_spectrum(wavenumber, y_data, peaks, peak_wn, peak_y,
         'grid.linestyle': '--',
     })
 
-    fig, ax = plt.subplots(figsize=(14, 5.5), dpi=OUTPUT_DPI)
+    fig = plt.figure(figsize=(14, 9) if (fg_table is not None and not fg_table.empty) else (14, 5.5), dpi=OUTPUT_DPI)
+    fig.patch.set_facecolor('#FAFAFA')
+    
+    # ── GridSpec Layout ──────────────────────────────────────────────
+    if fg_table is not None and not fg_table.empty:
+        if top_compound:
+            gs = fig.add_gridspec(2, 2, height_ratios=[2.5, 1], width_ratios=[3.5, 1], hspace=0.25, wspace=0.05)
+            ax = fig.add_subplot(gs[0, :])
+            ax_table = fig.add_subplot(gs[1, 0])
+            ax_img_box = fig.add_subplot(gs[1, 1])
+            ax_img_box.axis('off')
+        else:
+            gs = fig.add_gridspec(2, 1, height_ratios=[2.5, 1], hspace=0.25)
+            ax = fig.add_subplot(gs[0])
+            ax_table = fig.add_subplot(gs[1])
+            ax_img_box = None
+            
+        ax_table.axis('off')
+        
+        # Draw table
+        table_data = fg_table.copy()
+        if 'Confidence' in table_data.columns:
+            table_data['Confidence'] = table_data['Confidence'].apply(lambda x: f"{x*100:.1f}%" if isinstance(x, (int, float)) else x)
+        
+        display_data = table_data.head(10) # Show top 10 rows
+        
+        cell_text = []
+        for row in range(len(display_data)):
+            cell_text.append(display_data.iloc[row].values)
+            
+        table = ax_table.table(cellText=cell_text, colLabels=display_data.columns, loc='center', cellLoc='center')
+        table.auto_set_font_size(False)
+        table.set_fontsize(9)
+        table.scale(1, 1.4)
+        
+        for (row, col), cell in table.get_celld().items():
+            if row == 0:
+                cell.set_text_props(weight='bold', color='white')
+                cell.set_facecolor('#1B2838')
+            else:
+                cell.set_facecolor('#F8F9FA' if row % 2 == 0 else '#FFFFFF')
+                
+        # Draw compound image
+        if ax_img_box is not None and top_compound:
+            try:
+                safe_name = urllib.parse.quote(top_compound)
+                url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{safe_name}/PNG"
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    img_data = response.read()
+                    
+                img = mpimg.imread(io.BytesIO(img_data))
+                ax_img_box.imshow(img)
+                ax_img_box.set_title(f"AI Prediction:\n{top_compound}", fontsize=11, fontweight='bold', color='#1B2838')
+            except Exception as e:
+                print(f"  [WARN] Could not fetch compound image for {top_compound}: {e}")
+    else:
+        ax = fig.add_subplot(111)
 
     # ── Background ───────────────────────────────────────────────────
-    fig.patch.set_facecolor('#FAFAFA')
     ax.set_facecolor('#FFFFFF')
 
     # ── Main Spectrum Line ───────────────────────────────────────────
@@ -341,15 +398,41 @@ def plot_spectrum(wavenumber, y_data, peaks, peak_wn, peak_y,
     plt.close()
     print(f"  [OK] Plot saved -> {output_path}")
 
+class Colors:
+    CYAN = '\033[96m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    BOLD = '\033[1m'
+    RESET = '\033[0m'
+
 def interactive_wizard():
-    print("\n" + "="*70)
-    print("  FTIR Spectroscopy Analyzer Wizard  ")
-    print("="*70)
+    # Enable ANSI colors on Windows
+    os.system('color')
     
-    path_input = input("\n1. Enter the path to your .CSV file or folder (or drag and drop it here):\n> ").strip().strip('"').strip("'")
+    print(f"\n{Colors.CYAN}{Colors.BOLD}" + "="*70)
+    print("  🚀 FTIR Spectroscopy Analyzer Wizard - Premium Edition 🚀  ")
+    print("="*70 + f"{Colors.RESET}")
+    
+    print(f"\n{Colors.BOLD}1. Select your .CSV file or folder{Colors.RESET}")
+    print(f"   {Colors.YELLOW}(Press ENTER to open File Explorer, or paste path here){Colors.RESET}")
+    path_input = input("> ").strip().strip('"').strip("'")
+    
     if not path_input:
-        print("[ERROR] No path provided. Exiting.")
-        return
+        print(f"   {Colors.CYAN}Opening File Explorer...{Colors.RESET}")
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+        path_input = filedialog.askopenfilename(
+            title="Select FTIR CSV File",
+            filetypes=[("CSV Files", "*.csv *.CSV"), ("All Files", "*.*")]
+        )
+        if not path_input:
+            print(f"{Colors.RED}[ERROR] No file selected. Exiting.{Colors.RESET}")
+            return
+        print(f"   {Colors.GREEN}Selected: {path_input}{Colors.RESET}")
         
     y_type_choice = input("\n2. Data Format: [1] Auto-Detect (Smart)  [2] Force Transmittance (%T)  [3] Force Absorbance (A)\n> [1]: ").strip()
     force_y_type = None
@@ -435,43 +518,48 @@ def analyze_file(filepath, custom_name=None, output_dir=None, force_y_type=None,
         print(f"  - [USER OVERRIDE] Final output will be forced to Absorbance (A)")
 
     # 2. Filter to standard IR range
-    print("\n[2/6] Filtering to standard range (400-4000 cm-1)...")
+    print("\n[2/7] Filtering to standard range (400-4000 cm-1)...")
     df = filter_range(df)
     print(f"  - Data points after filtering: {len(df)}")
 
     # 3 & 4. Process based on raw and target types
     if target_type == 'Transmittance':
         if raw_type == 'Absorbance':
-            print("\n[3/6] Cleaning saturated absorbance values...")
+            print("\n[3/7] Cleaning saturated absorbance values...")
             df['y_value'] = df['y_value'].clip(lower=0, upper=3.5)
-            print("\n[4/6] Converting Absorbance -> Transmittance & smoothing...")
+            print("\n[4/7] Converting Absorbance -> Transmittance & smoothing...")
             raw_y = convert_to_transmittance(df['y_value'].values)
         else:
-            print("\n[3/6] Cleaning Transmittance values...")
+            print("\n[3/7] Cleaning Transmittance values...")
             df['y_value'] = df['y_value'].clip(lower=0, upper=120)
-            print("\n[4/6] Smoothing Transmittance spectrum...")
+            print("\n[4/7] Smoothing Transmittance spectrum...")
             raw_y = df['y_value'].values
     else: # target_type == 'Absorbance'
         if raw_type == 'Transmittance':
-            print("\n[3/6] Cleaning Transmittance values...")
+            print("\n[3/7] Cleaning Transmittance values...")
             df['y_value'] = df['y_value'].clip(lower=0, upper=120)
-            print("\n[4/6] Converting Transmittance -> Absorbance & smoothing...")
+            print("\n[4/7] Converting Transmittance -> Absorbance & smoothing...")
             raw_y = convert_to_absorbance(df['y_value'].values)
         else:
-            print("\n[3/6] Cleaning saturated absorbance values...")
+            print("\n[3/7] Cleaning saturated absorbance values...")
             df['y_value'] = df['y_value'].clip(lower=0, upper=3.5)
-            print("\n[4/6] Smoothing Absorbance spectrum...")
+            print("\n[4/7] Smoothing Absorbance spectrum...")
             raw_y = df['y_value'].values
 
-    processed_y = smooth_spectrum(raw_y)
+    smoothed_y = smooth_spectrum(raw_y)
     wavenumber = df['wavenumber'].values
+    
+    # 5. Advanced Baseline Correction (AsLS)
+    print("\n[5/7] Applying Asymmetric Least Squares (AsLS) Baseline Correction...")
+    processed_y, _ = baseline_correction_asls(smoothed_y, data_type=target_type)
+    print("  - Baseline flattened successfully.")
     
     # [SMART FEATURE] Quality Score
     snr, quality = calculate_quality_score(raw_y, processed_y)
     print(f"  - [SMART] Spectrum Quality: {quality} (Estimated SNR: {snr:.1f})")
 
-    # 5. Find peaks
-    print("\n[5/6] Identifying major absorption peaks...")
+    # 6. Find peaks
+    print("\n[6/7] Identifying major absorption peaks...")
     
     # Adjust sensitivity
     prominence = PEAK_PROMINENCE
@@ -490,25 +578,28 @@ def analyze_file(filepath, custom_name=None, output_dir=None, force_y_type=None,
         unit = '%T' if target_type == 'Transmittance' else 'A'
         print(f"    -> {wn:.1f} cm-1  ({y:.2f} {unit})")
 
-    # 6. Functional Group Identification
-    print("\n[6/6] Functional group analysis...")
-    fg_table = identify_functional_groups(peak_wn)
+    # 7. AI Expert System Analysis
+    print(f"\n{Colors.CYAN}{Colors.BOLD}[7/7] AI Expert System Analysis...{Colors.RESET}")
+    expert = FTIRExpertSystem()
+    fg_table, predictions, insights = expert.analyze_spectrum(peak_wn)
     
     if fg_table.empty:
-        print("  - No significant peaks or functional groups found.")
-        predictions = ["Unidentified (No peaks found)"]
+        print(f"  {Colors.RED}- No significant peaks or functional groups found.{Colors.RESET}")
     else:
         table_str = fg_table.to_string(index=False)
         # Safely print, replacing any problematic chars
         print(table_str.encode('ascii', 'replace').decode('ascii'))
         
-        # [SMART FEATURE] Predict Compound
-        found_bonds = fg_table['Bond'].unique().tolist()
-        predictions = predict_compound(found_bonds)
-        
-        print(f"\n  [SMART PREDICTION] Based on spectral analysis, the compound is likely:")
+        print(f"\n  {Colors.YELLOW}{Colors.BOLD}🤖 [AI INSIGHTS]{Colors.RESET}")
+        for insight in insights:
+            print(f"   {Colors.CYAN}*{Colors.RESET} {insight}")
+            
+        print(f"\n  {Colors.GREEN}{Colors.BOLD}🎯 [AI PREDICTION]{Colors.RESET} Based on spectral analysis, the compound is likely:")
         for pred in predictions:
-            print(f"   -> {pred}")
+            if "[Specific Compound]" in pred:
+                print(f"   {Colors.GREEN}➔ {Colors.BOLD}{pred}{Colors.RESET}")
+            else:
+                print(f"   {Colors.GREEN}➔ {pred}{Colors.RESET}")
 
     # Save table
     table_path = os.path.join(output_dir, f"{name_no_ext}_functional_groups.csv")
@@ -517,6 +608,9 @@ def analyze_file(filepath, custom_name=None, output_dir=None, force_y_type=None,
         # Append prediction to the bottom of the CSV
         with open(table_path, 'w', encoding='utf-8') as f:
             fg_table.to_csv(f, index=False)
+            f.write("\nAI INSIGHTS:\n")
+            for insight in insights:
+                f.write(f"{insight}\n")
             f.write(f"\nAI PREDICTION:,{ ' OR '.join(predictions) }\n")
         print(f"\n  [OK] Table saved -> {table_path}")
     except PermissionError:
@@ -530,7 +624,16 @@ def analyze_file(filepath, custom_name=None, output_dir=None, force_y_type=None,
     png_path = os.path.join(output_dir, f"{name_no_ext}_FTIR_spectrum.png")
     
     try:
-        plot_spectrum(wavenumber, processed_y, peaks, peak_wn, peak_y, title, png_path, data_type=target_type)
+        # Extract top predicted specific compound name
+        top_compound = None
+        if predictions:
+            for pred in predictions:
+                if "[Specific Compound]" in pred:
+                    top_compound = pred.split("]")[1].split("(")[0].strip()
+                    break
+                    
+        plot_spectrum(wavenumber, processed_y, peaks, peak_wn, peak_y, title, png_path, 
+                      data_type=target_type, fg_table=fg_table, top_compound=top_compound)
     except PermissionError:
         print(f"  [ERROR] Permission denied: Could not save plot '{name_no_ext}_FTIR_spectrum.png'.")
         print("          Is the image file currently open in another program?")
