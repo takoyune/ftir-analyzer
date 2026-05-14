@@ -104,6 +104,12 @@ def convert_to_transmittance(absorbance):
     """Convert Absorbance to %Transmittance: %T = 10^(2 - A)."""
     return np.power(10, (2.0 - absorbance))
 
+def convert_to_absorbance(transmittance):
+    """Convert %Transmittance to Absorbance: A = 2 - log10(%T)."""
+    # Clip near zero to avoid log10(0)
+    t_safe = np.clip(transmittance, 1e-5, None)
+    return 2.0 - np.log10(t_safe)
+
 def calculate_quality_score(transmittance, smoothed):
     """Smart feature: Calculate a basic Signal-to-Noise / Quality score."""
     noise = np.abs(transmittance - smoothed)
@@ -149,24 +155,24 @@ def baseline_correction(wavenumber, transmittance):
     return corrected
 
 
-def find_main_peaks(wavenumber, transmittance, prominence=PEAK_PROMINENCE,
-                    distance=PEAK_MIN_DISTANCE):
-    """
-    Find absorption peaks (troughs in %T spectrum).
-    We invert the spectrum to find minima as maxima.
-    """
-    inverted = -transmittance
-    peaks, properties = find_peaks(inverted, prominence=prominence,
-                                   distance=distance)
+def find_main_peaks(wavenumber, y_data, data_type='Transmittance', prominence=PEAK_PROMINENCE, distance=PEAK_MIN_DISTANCE):
+    """Identify major absorption peaks."""
+    if data_type == 'Transmittance':
+        signal_for_peaks = -y_data
+        actual_prominence = prominence
+    else:
+        signal_for_peaks = y_data
+        actual_prominence = max(0.01, prominence * 0.015)
 
-    # Sort by prominence (strongest peaks first)
+    peaks, properties = find_peaks(signal_for_peaks, prominence=actual_prominence, distance=distance)
+
     sorted_idx = np.argsort(-properties['prominences'])
     peaks = peaks[sorted_idx]
 
     peak_wavenumbers = wavenumber[peaks]
-    peak_transmittance = transmittance[peaks]
+    peak_y = y_data[peaks]
 
-    return peaks, peak_wavenumbers, peak_transmittance
+    return peaks, peak_wavenumbers, peak_y
 
 
 def identify_functional_groups(peak_wavenumbers):
@@ -223,17 +229,20 @@ def predict_compound(found_bonds):
     return predictions
 
 
-def plot_spectrum(wavenumber, y_values, peaks, peak_wn, peak_y,
-                  title, output_path, ylabel='Transmittance (%)', invert_y=True):
-    """Generate and save an aesthetically pleasing, publication-ready FTIR plot."""
-    matplotlib.rcParams.update({
-        'font.family': 'sans-serif',
-        'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans'],
+def plot_spectrum(wavenumber, y_data, peaks, peak_wn, peak_y,
+                  title, output_path, data_type='Transmittance'):
+    """Generate a publication-quality FTIR spectrum plot."""
+
+    # ── Style Setup ──────────────────────────────────────────────────
+    plt.rcParams.update({
+        'font.family': 'serif',
+        'font.serif': ['Times New Roman', 'DejaVu Serif', 'serif'],
+        'font.size': 11,
         'axes.linewidth': 1.2,
-        'xtick.major.width': 1.2,
-        'ytick.major.width': 1.2,
-        'xtick.minor.width': 0.8,
-        'ytick.minor.width': 0.8,
+        'xtick.major.width': 1.0,
+        'ytick.major.width': 1.0,
+        'xtick.minor.width': 0.6,
+        'ytick.minor.width': 0.6,
         'xtick.major.size': 6,
         'ytick.major.size': 6,
         'xtick.minor.size': 3,
@@ -253,34 +262,36 @@ def plot_spectrum(wavenumber, y_values, peaks, peak_wn, peak_y,
     ax.set_facecolor('#FFFFFF')
 
     # ── Main Spectrum Line ───────────────────────────────────────────
-    ax.plot(wavenumber, y_values, color='#1B2838', linewidth=1.3,
-            zorder=3, label='Spectrum')
+    label_txt = '%T Spectrum' if data_type == 'Transmittance' else 'Absorbance Spectrum'
+    ax.plot(wavenumber, y_data, color='#1B2838', linewidth=1.3,
+            zorder=3, label=label_txt)
 
     # ── Shade the absorption bands lightly ───────────────────────────
-    fill_base = 100 if invert_y else 0
-    ax.fill_between(wavenumber, y_values, fill_base,
-                    alpha=0.06, color='#2196F3', zorder=1)
+    if data_type == 'Transmittance':
+        ax.fill_between(wavenumber, y_data, 100, alpha=0.06, color='#2196F3', zorder=1)
+    else:
+        ax.fill_between(wavenumber, y_data, 0, alpha=0.06, color='#2196F3', zorder=1)
 
     # ── Peak Markers ─────────────────────────────────────────────────
+    marker_type = 'v' if data_type == 'Transmittance' else '^'
     ax.scatter(peak_wn, peak_y, color='#D32F2F', s=45, zorder=5,
-              edgecolors='#B71C1C', linewidths=0.8, marker='v' if invert_y else '^',
+              edgecolors='#B71C1C', linewidths=0.8, marker=marker_type,
               label=f'Identified Peaks ({len(peak_wn)})')
 
     # ── Peak Annotations ─────────────────────────────────────────────
     annotated_positions = []
     for i, (wn, y) in enumerate(zip(peak_wn, peak_y)):
-        # Avoid overlapping labels
         too_close = False
         for prev_wn, prev_y in annotated_positions:
-            if abs(wn - prev_wn) < 80 and abs(y - prev_y) < (8 if invert_y else 0.1):
+            if abs(wn - prev_wn) < 80 and abs(y - prev_y) < (8 if data_type=='Transmittance' else 0.1):
                 too_close = True
                 break
 
         if not too_close and len(annotated_positions) < 20:
-            if invert_y:
+            if data_type == 'Transmittance':
                 y_offset = -12 if y > 30 else 12
             else:
-                y_offset = 12 if y < 1.5 else -12
+                y_offset = 12
                 
             ax.annotate(
                 f'{wn:.0f}',
@@ -301,21 +312,18 @@ def plot_spectrum(wavenumber, y_values, peaks, peak_wn, peak_y,
     # ── Axis Configuration ───────────────────────────────────────────
     ax.set_xlim(WAVENUMBER_MAX, WAVENUMBER_MIN)  # Inverted X-axis
     
-    if invert_y:
-        ax.set_ylim(bottom=max(0, np.min(y_values) - 5),
-                    top=min(110, np.max(y_values) + 8))
-        ax.invert_yaxis()
+    if data_type == 'Transmittance':
+        ax.set_ylim(bottom=max(0, y_data.min() - 5), top=min(110, y_data.max() + 8))
+        ax.set_ylabel('Transmittance (%T)', fontsize=13, fontweight='bold', labelpad=8)
     else:
-        ax.set_ylim(bottom=max(0, np.min(y_values) - 0.1),
-                    top=np.max(y_values) + 0.5)
+        ax.set_ylim(bottom=0, top=y_data.max() + 0.1)
+        ax.set_ylabel('Absorbance (A)', fontsize=13, fontweight='bold', labelpad=8)
 
     ax.xaxis.set_major_locator(MultipleLocator(500))
     ax.xaxis.set_minor_locator(AutoMinorLocator(5))
     ax.yaxis.set_minor_locator(AutoMinorLocator(5))
 
     ax.set_xlabel('Wavenumber (cm⁻¹)', fontsize=13, fontweight='bold',
-                  labelpad=8)
-    ax.set_ylabel(ylabel, fontsize=13, fontweight='bold',
                   labelpad=8)
     ax.set_title(title, fontsize=15, fontweight='bold', pad=15,
                  color='#1B2838')
@@ -335,7 +343,7 @@ def plot_spectrum(wavenumber, y_values, peaks, peak_wn, peak_y,
 
 def interactive_wizard():
     print("\n" + "="*70)
-    print(" 🌟 FTIR Spectroscopy Analyzer Wizard 🌟")
+    print("  FTIR Spectroscopy Analyzer Wizard  ")
     print("="*70)
     
     path_input = input("\n1. Enter the path to your .CSV file or folder (or drag and drop it here):\n> ").strip().strip('"').strip("'")
@@ -408,27 +416,58 @@ def analyze_file(filepath, custom_name=None, output_dir=None, force_y_type=None,
     print(f"  - Raw data points: {len(df)}")
     print(f"  - Wavenumber range: {df['wavenumber'].min():.1f} - {df['wavenumber'].max():.1f} cm-1")
 
-    # [SMART FEATURE] Detect raw data type
+    # [SMART FEATURE] Detect Raw Data Type
     max_y = df['y_value'].max()
-    is_raw_absorbance = max_y <= 10
-    
-    if is_raw_absorbance:
-        print(f"  - [SMART DETECT] Max Y = {max_y:.2f}. Raw format is Absorbance (A)")
-        print("\n[3/6] Standardizing to Transmittance (%T) for analysis...")
-        df['y_value'] = df['y_value'].clip(lower=0, upper=3.5)
-        raw_transmittance = convert_to_transmittance(df['y_value'].values)
+    if max_y > 10:
+        raw_type = 'Transmittance'
+        print(f"  - [SMART DETECT] Max Y = {max_y:.1f}. Auto-detected format: Transmittance (%T)")
     else:
-        print(f"  - [SMART DETECT] Max Y = {max_y:.1f}. Raw format is Transmittance (%T)")
-        print("\n[3/6] Cleaning Transmittance values...")
-        df['y_value'] = df['y_value'].clip(lower=0, upper=120)
-        raw_transmittance = df['y_value'].values
+        raw_type = 'Absorbance'
+        print(f"  - [SMART DETECT] Max Y = {max_y:.2f}. Auto-detected format: Absorbance (A)")
 
-    print("\n[4/6] Smoothing spectrum...")
-    transmittance = smooth_spectrum(raw_transmittance)
+    # Determine Target Type
+    target_type = raw_type
+    if force_y_type == 'transmittance':
+        target_type = 'Transmittance'
+        print(f"  - [USER OVERRIDE] Final output will be forced to Transmittance (%T)")
+    elif force_y_type == 'absorbance':
+        target_type = 'Absorbance'
+        print(f"  - [USER OVERRIDE] Final output will be forced to Absorbance (A)")
+
+    # 2. Filter to standard IR range
+    print("\n[2/6] Filtering to standard range (400-4000 cm-1)...")
+    df = filter_range(df)
+    print(f"  - Data points after filtering: {len(df)}")
+
+    # 3 & 4. Process based on raw and target types
+    if target_type == 'Transmittance':
+        if raw_type == 'Absorbance':
+            print("\n[3/6] Cleaning saturated absorbance values...")
+            df['y_value'] = df['y_value'].clip(lower=0, upper=3.5)
+            print("\n[4/6] Converting Absorbance -> Transmittance & smoothing...")
+            raw_y = convert_to_transmittance(df['y_value'].values)
+        else:
+            print("\n[3/6] Cleaning Transmittance values...")
+            df['y_value'] = df['y_value'].clip(lower=0, upper=120)
+            print("\n[4/6] Smoothing Transmittance spectrum...")
+            raw_y = df['y_value'].values
+    else: # target_type == 'Absorbance'
+        if raw_type == 'Transmittance':
+            print("\n[3/6] Cleaning Transmittance values...")
+            df['y_value'] = df['y_value'].clip(lower=0, upper=120)
+            print("\n[4/6] Converting Transmittance -> Absorbance & smoothing...")
+            raw_y = convert_to_absorbance(df['y_value'].values)
+        else:
+            print("\n[3/6] Cleaning saturated absorbance values...")
+            df['y_value'] = df['y_value'].clip(lower=0, upper=3.5)
+            print("\n[4/6] Smoothing Absorbance spectrum...")
+            raw_y = df['y_value'].values
+
+    processed_y = smooth_spectrum(raw_y)
     wavenumber = df['wavenumber'].values
     
     # [SMART FEATURE] Quality Score
-    snr, quality = calculate_quality_score(raw_transmittance, transmittance)
+    snr, quality = calculate_quality_score(raw_y, processed_y)
     print(f"  - [SMART] Spectrum Quality: {quality} (Estimated SNR: {snr:.1f})")
 
     # 5. Find peaks
@@ -438,17 +477,18 @@ def analyze_file(filepath, custom_name=None, output_dir=None, force_y_type=None,
     prominence = PEAK_PROMINENCE
     if sensitivity == 'high':
         prominence = max(0.5, PEAK_PROMINENCE * 0.4)
-        print(f"  - Sensitivity: HIGH (Prominence threshold: {prominence:.1f})")
+        print(f"  - Sensitivity: HIGH")
     elif sensitivity == 'low':
         prominence = PEAK_PROMINENCE * 2.0
-        print(f"  - Sensitivity: LOW (Prominence threshold: {prominence:.1f})")
+        print(f"  - Sensitivity: LOW")
     else:
-        print(f"  - Sensitivity: NORMAL (Prominence threshold: {prominence:.1f})")
+        print(f"  - Sensitivity: NORMAL")
         
-    peaks, peak_wn, peak_t = find_main_peaks(wavenumber, transmittance, prominence=prominence)
+    peaks, peak_wn, peak_y = find_main_peaks(wavenumber, processed_y, data_type=target_type, prominence=prominence)
     print(f"  - Main peaks found: {len(peaks)}")
-    for wn, t in zip(peak_wn, peak_t):
-        print(f"    -> {wn:.1f} cm-1  ({t:.1f} %T)")
+    for wn, y in zip(peak_wn, peak_y):
+        unit = '%T' if target_type == 'Transmittance' else 'A'
+        print(f"    -> {wn:.1f} cm-1  ({y:.2f} {unit})")
 
     # 6. Functional Group Identification
     print("\n[6/6] Functional group analysis...")
@@ -485,26 +525,12 @@ def analyze_file(filepath, custom_name=None, output_dir=None, force_y_type=None,
     except Exception as e:
         print(f"\n  [ERROR] Could not save table: {e}")
 
-    # Determine final plot format
-    plot_type = force_y_type if force_y_type else 'transmittance'
-    
-    if plot_type == 'absorbance':
-        plot_y = 2.0 - np.log10(np.clip(transmittance, 0.001, 100))
-        plot_peak_y = [2.0 - np.log10(max(0.001, t)) for t in peak_t]
-        y_label = 'Absorbance (A)'
-        invert_y = False
-    else:
-        plot_y = transmittance
-        plot_peak_y = peak_t
-        y_label = 'Transmittance (%)'
-        invert_y = True
-
     # Generate plot
     title = name_no_ext.replace('_', ' ')
     png_path = os.path.join(output_dir, f"{name_no_ext}_FTIR_spectrum.png")
     
     try:
-        plot_spectrum(wavenumber, plot_y, peaks, peak_wn, plot_peak_y, title, png_path, ylabel=y_label, invert_y=invert_y)
+        plot_spectrum(wavenumber, processed_y, peaks, peak_wn, peak_y, title, png_path, data_type=target_type)
     except PermissionError:
         print(f"  [ERROR] Permission denied: Could not save plot '{name_no_ext}_FTIR_spectrum.png'.")
         print("          Is the image file currently open in another program?")
