@@ -305,8 +305,51 @@ def plot_spectrum(wavenumber, transmittance, peaks, peak_wn, peak_t,
     plt.close()
     print(f"  [OK] Plot saved -> {output_path}")
 
+def interactive_wizard():
+    print("\n" + "="*70)
+    print(" 🌟 FTIR Spectroscopy Analyzer Wizard 🌟")
+    print("="*70)
+    
+    path_input = input("\n1. Enter the path to your .CSV file or folder (or drag and drop it here):\n> ").strip().strip('"').strip("'")
+    if not path_input:
+        print("[ERROR] No path provided. Exiting.")
+        return
+        
+    y_type_choice = input("\n2. Data Format: [1] Auto-Detect (Smart)  [2] Force Transmittance (%T)  [3] Force Absorbance (A)\n> [1]: ").strip()
+    force_y_type = None
+    if y_type_choice == '2':
+        force_y_type = 'transmittance'
+    elif y_type_choice == '3':
+        force_y_type = 'absorbance'
+        
+    custom_name = input("\n3. Custom Plot Title (leave blank to use filename):\n> ").strip()
+    if not custom_name:
+        custom_name = None
+        
+    sens_choice = input("\n4. Peak Sensitivity: [1] Normal  [2] High (finds small peaks)  [3] Low (major peaks only)\n> [1]: ").strip()
+    sensitivity = 'normal'
+    if sens_choice == '2':
+        sensitivity = 'high'
+    elif sens_choice == '3':
+        sensitivity = 'low'
+        
+    print("\nStarting analysis...\n")
+    
+    if os.path.isfile(path_input):
+        analyze_file(path_input, custom_name=custom_name, force_y_type=force_y_type, sensitivity=sensitivity)
+    elif os.path.isdir(path_input):
+        search_pattern = os.path.join(path_input, "*.CSV")
+        csv_files = glob.glob(search_pattern) + glob.glob(os.path.join(path_input, "*.csv"))
+        if not csv_files:
+            print(f"[WARN] No CSV files found in {path_input}")
+        else:
+            for f in set(csv_files):
+                analyze_file(f, force_y_type=force_y_type, sensitivity=sensitivity)
+    else:
+        print(f"[ERROR] Path not found: {path_input}")
 
-def analyze_file(filepath, custom_name=None, output_dir=None):
+
+def analyze_file(filepath, custom_name=None, output_dir=None, force_y_type=None, sensitivity='normal'):
     """Full FTIR analysis pipeline for a single file."""
     basename = os.path.basename(filepath)
     if custom_name:
@@ -333,12 +376,19 @@ def analyze_file(filepath, custom_name=None, output_dir=None):
 
     # [SMART FEATURE] Detect data type
     max_y = df['y_value'].max()
-    if max_y > 10:
+    if force_y_type == 'transmittance':
         data_type = 'Transmittance'
-        print(f"  - [SMART DETECT] Max Y = {max_y:.1f}. Auto-detected format: Transmittance (%T)")
-    else:
+        print(f"  - [FORCED] Processing as Transmittance (%T)")
+    elif force_y_type == 'absorbance':
         data_type = 'Absorbance'
-        print(f"  - [SMART DETECT] Max Y = {max_y:.2f}. Auto-detected format: Absorbance (A)")
+        print(f"  - [FORCED] Processing as Absorbance (A)")
+    else:
+        if max_y > 10:
+            data_type = 'Transmittance'
+            print(f"  - [SMART DETECT] Max Y = {max_y:.1f}. Auto-detected format: Transmittance (%T)")
+        else:
+            data_type = 'Absorbance'
+            print(f"  - [SMART DETECT] Max Y = {max_y:.2f}. Auto-detected format: Absorbance (A)")
 
     # 2. Filter to standard IR range
     print("\n[2/6] Filtering to standard range (400-4000 cm-1)...")
@@ -366,7 +416,19 @@ def analyze_file(filepath, custom_name=None, output_dir=None):
 
     # 5. Find peaks
     print("\n[5/6] Identifying major absorption peaks...")
-    peaks, peak_wn, peak_t = find_main_peaks(wavenumber, transmittance)
+    
+    # Adjust sensitivity
+    prominence = PEAK_PROMINENCE
+    if sensitivity == 'high':
+        prominence = max(0.5, PEAK_PROMINENCE * 0.4)
+        print(f"  - Sensitivity: HIGH (Prominence threshold: {prominence:.1f})")
+    elif sensitivity == 'low':
+        prominence = PEAK_PROMINENCE * 2.0
+        print(f"  - Sensitivity: LOW (Prominence threshold: {prominence:.1f})")
+    else:
+        print(f"  - Sensitivity: NORMAL (Prominence threshold: {prominence:.1f})")
+        
+    peaks, peak_wn, peak_t = find_main_peaks(wavenumber, transmittance, prominence=prominence)
     print(f"  - Main peaks found: {len(peaks)}")
     for wn, t in zip(peak_wn, peak_t):
         print(f"    -> {wn:.1f} cm-1  ({t:.1f} %T)")
@@ -396,47 +458,44 @@ def analyze_file(filepath, custom_name=None, output_dir=None):
 # MAIN
 # ─────────────────────────────────────────────────────────────────────
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="FTIR Spectroscopy Analyzer")
-    parser.add_argument('--file', type=str, help="Path to a single .CSV file to analyze")
-    parser.add_argument('--name', type=str, help="Custom name for the single file analysis plot title")
-    parser.add_argument('--dir', type=str, help="Directory containing multiple .CSV files to analyze")
-    parser.add_argument('--out', type=str, help="Output directory for plots and tables")
-    
-    args = parser.parse_args()
-    
-    if args.file:
-        if os.path.exists(args.file):
-            analyze_file(args.file, custom_name=args.name, output_dir=args.out)
-        else:
-            print(f"[ERROR] File not found: {args.file}")
-            
-    elif args.dir:
-        if os.path.isdir(args.dir):
-            search_pattern = os.path.join(args.dir, "*.CSV")
-            # Support both .CSV and .csv
-            csv_files = glob.glob(search_pattern) + glob.glob(os.path.join(args.dir, "*.csv"))
-            
-            if not csv_files:
-                print(f"[WARN] No CSV files found in {args.dir}")
-            else:
-                for f in set(csv_files):
-                    analyze_file(f, output_dir=args.out)
-        else:
-            print(f"[ERROR] Directory not found: {args.dir}")
-            
+    import sys
+    if len(sys.argv) == 1:
+        # Run interactive wizard if no arguments are passed
+        interactive_wizard()
+        print(f"\n{'='*70}")
+        print("  All analyses complete.")
+        print(f"{'='*70}\n")
     else:
-        # Default behavior if no args provided (backward compatibility for testing)
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        csv_files = [
-            (os.path.join(script_dir, "Prakt CE-A klp 2 as benzoat 060526.CSV"), "benzoat acid"),
-            (os.path.join(script_dir, "Prakt CE-A klp 2 PEG 060526.CSV"), "PEG"),
-        ]
-        for f, custom_name in csv_files:
-            if os.path.exists(f):
-                analyze_file(f, custom_name=custom_name)
+        parser = argparse.ArgumentParser(description="FTIR Spectroscopy Analyzer")
+        parser.add_argument('--file', type=str, help="Path to a single .CSV file to analyze")
+        parser.add_argument('--name', type=str, help="Custom name for the single file analysis plot title")
+        parser.add_argument('--dir', type=str, help="Directory containing multiple .CSV files to analyze")
+        parser.add_argument('--out', type=str, help="Output directory for plots and tables")
+        
+        args = parser.parse_args()
+        
+        if args.file:
+            if os.path.exists(args.file):
+                analyze_file(args.file, custom_name=args.name, output_dir=args.out)
             else:
-                print(f"[WARN] File not found: {f}")
-
-    print(f"\n{'='*70}")
-    print("  All analyses complete.")
-    print(f"{'='*70}\n")
+                print(f"[ERROR] File not found: {args.file}")
+                
+        elif args.dir:
+            if os.path.isdir(args.dir):
+                search_pattern = os.path.join(args.dir, "*.CSV")
+                # Support both .CSV and .csv
+                csv_files = glob.glob(search_pattern) + glob.glob(os.path.join(args.dir, "*.csv"))
+                
+                if not csv_files:
+                    print(f"[WARN] No CSV files found in {args.dir}")
+                else:
+                    for f in set(csv_files):
+                        analyze_file(f, output_dir=args.out)
+            else:
+                print(f"[ERROR] Directory not found: {args.dir}")
+        else:
+            parser.print_help()
+            
+        print(f"\n{'='*70}")
+        print("  All analyses complete.")
+        print(f"{'='*70}\n")
