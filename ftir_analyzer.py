@@ -185,10 +185,14 @@ def identify_functional_groups(peak_wavenumbers):
                 break
         if not matched:
             results.append({
-                'Wavenumber (cm⁻¹)': f'{wn:.1f}',
+                'Wavenumber (cm⁻¹)': round(wn, 1),
                 'Bond': '—',
-                'Functional Group': 'Fingerprint region / Unassigned',
+                'Functional Group': 'Fingerprint region / Unassigned'
             })
+            
+    if not results:
+        return pd.DataFrame(columns=['Wavenumber (cm⁻¹)', 'Bond', 'Functional Group'])
+        
     return pd.DataFrame(results)
 
 def predict_compound(found_bonds):
@@ -452,17 +456,22 @@ def analyze_file(filepath, custom_name=None, output_dir=None, force_y_type=None,
     # 6. Functional Group Identification
     print("\n[6/6] Functional group analysis...")
     fg_table = identify_functional_groups(peak_wn)
-    table_str = fg_table.to_string(index=False)
-    # Safely print, replacing any problematic chars
-    print(table_str.encode('ascii', 'replace').decode('ascii'))
     
-    # [SMART FEATURE] Predict Compound
-    found_bonds = fg_table['Bond'].unique().tolist()
-    predictions = predict_compound(found_bonds)
-    
-    print(f"\n  [SMART PREDICTION] Based on spectral analysis, the compound is likely:")
-    for pred in predictions:
-        print(f"   -> {pred}")
+    if fg_table.empty:
+        print("  - No significant peaks or functional groups found.")
+        predictions = ["Unidentified (No peaks found)"]
+    else:
+        table_str = fg_table.to_string(index=False)
+        # Safely print, replacing any problematic chars
+        print(table_str.encode('ascii', 'replace').decode('ascii'))
+        
+        # [SMART FEATURE] Predict Compound
+        found_bonds = fg_table['Bond'].unique().tolist()
+        predictions = predict_compound(found_bonds)
+        
+        print(f"\n  [SMART PREDICTION] Based on spectral analysis, the compound is likely:")
+        for pred in predictions:
+            print(f"   -> {pred}")
 
     # Save table
     table_path = os.path.join(output_dir, f"{name_no_ext}_functional_groups.csv")
