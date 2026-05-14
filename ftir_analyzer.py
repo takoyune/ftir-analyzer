@@ -391,6 +391,12 @@ def analyze_file(filepath, custom_name=None, output_dir=None, force_y_type=None,
     # 1. Load Data
     print("\n[1/6] Loading data...")
     df = load_csv(filepath)
+    
+    if df.empty:
+        print(f"  [ERROR] No valid numerical spectroscopy data could be extracted from this file.")
+        print("          Please ensure this is a valid CSV file exported from an FTIR machine.")
+        return None
+        
     print(f"  - Raw data points: {len(df)}")
     print(f"  - Wavenumber range: {df['wavenumber'].min():.1f} - {df['wavenumber'].max():.1f} cm-1")
 
@@ -476,18 +482,29 @@ def analyze_file(filepath, custom_name=None, output_dir=None, force_y_type=None,
     # Save table
     table_path = os.path.join(output_dir, f"{name_no_ext}_functional_groups.csv")
     
-    # Append prediction to the bottom of the CSV
-    with open(table_path, 'w', encoding='utf-8') as f:
-        fg_table.to_csv(f, index=False)
-        f.write(f"\nAI PREDICTION:,{ ' OR '.join(predictions) }\n")
-        
-    print(f"\n  [OK] Table saved -> {table_path}")
+    try:
+        # Append prediction to the bottom of the CSV
+        with open(table_path, 'w', encoding='utf-8') as f:
+            fg_table.to_csv(f, index=False)
+            f.write(f"\nAI PREDICTION:,{ ' OR '.join(predictions) }\n")
+        print(f"\n  [OK] Table saved -> {table_path}")
+    except PermissionError:
+        print(f"\n  [ERROR] Permission denied: Could not save '{name_no_ext}_functional_groups.csv'.")
+        print("          Is the file currently open in Excel or another program? Please close it and try again.")
+    except Exception as e:
+        print(f"\n  [ERROR] Could not save table: {e}")
 
     # Generate plot
     title = name_no_ext.replace('_', ' ')
     png_path = os.path.join(output_dir, f"{name_no_ext}_FTIR_spectrum.png")
-    plot_spectrum(wavenumber, transmittance, peaks, peak_wn, peak_t,
-                  title, png_path)
+    
+    try:
+        plot_spectrum(wavenumber, transmittance, peaks, peak_wn, peak_t, title, png_path)
+    except PermissionError:
+        print(f"  [ERROR] Permission denied: Could not save plot '{name_no_ext}_FTIR_spectrum.png'.")
+        print("          Is the image file currently open in another program?")
+    except Exception as e:
+        print(f"  [ERROR] Failed to generate plot: {e}")
 
     return fg_table
 
