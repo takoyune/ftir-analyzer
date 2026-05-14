@@ -223,20 +223,17 @@ def predict_compound(found_bonds):
     return predictions
 
 
-def plot_spectrum(wavenumber, transmittance, peaks, peak_wn, peak_t,
-                  title, output_path):
-    """Generate a publication-quality FTIR spectrum plot."""
-
-    # ── Style Setup ──────────────────────────────────────────────────
-    plt.rcParams.update({
-        'font.family': 'serif',
-        'font.serif': ['Times New Roman', 'DejaVu Serif', 'serif'],
-        'font.size': 11,
+def plot_spectrum(wavenumber, y_values, peaks, peak_wn, peak_y,
+                  title, output_path, ylabel='Transmittance (%)', invert_y=True):
+    """Generate and save an aesthetically pleasing, publication-ready FTIR plot."""
+    matplotlib.rcParams.update({
+        'font.family': 'sans-serif',
+        'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans'],
         'axes.linewidth': 1.2,
-        'xtick.major.width': 1.0,
-        'ytick.major.width': 1.0,
-        'xtick.minor.width': 0.6,
-        'ytick.minor.width': 0.6,
+        'xtick.major.width': 1.2,
+        'ytick.major.width': 1.2,
+        'xtick.minor.width': 0.8,
+        'ytick.minor.width': 0.8,
         'xtick.major.size': 6,
         'ytick.major.size': 6,
         'xtick.minor.size': 3,
@@ -256,33 +253,38 @@ def plot_spectrum(wavenumber, transmittance, peaks, peak_wn, peak_t,
     ax.set_facecolor('#FFFFFF')
 
     # ── Main Spectrum Line ───────────────────────────────────────────
-    ax.plot(wavenumber, transmittance, color='#1B2838', linewidth=1.3,
-            zorder=3, label='%T Spectrum')
+    ax.plot(wavenumber, y_values, color='#1B2838', linewidth=1.3,
+            zorder=3, label='Spectrum')
 
     # ── Shade the absorption bands lightly ───────────────────────────
-    ax.fill_between(wavenumber, transmittance, 100,
+    fill_base = 100 if invert_y else 0
+    ax.fill_between(wavenumber, y_values, fill_base,
                     alpha=0.06, color='#2196F3', zorder=1)
 
     # ── Peak Markers ─────────────────────────────────────────────────
-    ax.scatter(peak_wn, peak_t, color='#D32F2F', s=45, zorder=5,
-              edgecolors='#B71C1C', linewidths=0.8, marker='v',
+    ax.scatter(peak_wn, peak_y, color='#D32F2F', s=45, zorder=5,
+              edgecolors='#B71C1C', linewidths=0.8, marker='v' if invert_y else '^',
               label=f'Identified Peaks ({len(peak_wn)})')
 
     # ── Peak Annotations ─────────────────────────────────────────────
     annotated_positions = []
-    for i, (wn, t) in enumerate(zip(peak_wn, peak_t)):
+    for i, (wn, y) in enumerate(zip(peak_wn, peak_y)):
         # Avoid overlapping labels
         too_close = False
         for prev_wn, prev_y in annotated_positions:
-            if abs(wn - prev_wn) < 80 and abs(t - prev_y) < 8:
+            if abs(wn - prev_wn) < 80 and abs(y - prev_y) < (8 if invert_y else 0.1):
                 too_close = True
                 break
 
         if not too_close and len(annotated_positions) < 20:
-            y_offset = -12 if t > 30 else 12
+            if invert_y:
+                y_offset = -12 if y > 30 else 12
+            else:
+                y_offset = 12 if y < 1.5 else -12
+                
             ax.annotate(
                 f'{wn:.0f}',
-                xy=(wn, t),
+                xy=(wn, y),
                 xytext=(0, y_offset),
                 textcoords='offset points',
                 fontsize=7.5,
@@ -294,12 +296,18 @@ def plot_spectrum(wavenumber, transmittance, peaks, peak_wn, peak_t,
                 arrowprops=dict(arrowstyle='-', color='#AAAAAA', lw=0.5),
                 zorder=6,
             )
-            annotated_positions.append((wn, t))
+            annotated_positions.append((wn, y))
 
     # ── Axis Configuration ───────────────────────────────────────────
     ax.set_xlim(WAVENUMBER_MAX, WAVENUMBER_MIN)  # Inverted X-axis
-    ax.set_ylim(bottom=max(0, transmittance.min() - 5),
-                top=min(110, transmittance.max() + 8))
+    
+    if invert_y:
+        ax.set_ylim(bottom=max(0, np.min(y_values) - 5),
+                    top=min(110, np.max(y_values) + 8))
+        ax.invert_yaxis()
+    else:
+        ax.set_ylim(bottom=max(0, np.min(y_values) - 0.1),
+                    top=np.max(y_values) + 0.5)
 
     ax.xaxis.set_major_locator(MultipleLocator(500))
     ax.xaxis.set_minor_locator(AutoMinorLocator(5))
@@ -307,7 +315,7 @@ def plot_spectrum(wavenumber, transmittance, peaks, peak_wn, peak_t,
 
     ax.set_xlabel('Wavenumber (cm⁻¹)', fontsize=13, fontweight='bold',
                   labelpad=8)
-    ax.set_ylabel('Transmittance (%T)', fontsize=13, fontweight='bold',
+    ax.set_ylabel(ylabel, fontsize=13, fontweight='bold',
                   labelpad=8)
     ax.set_title(title, fontsize=15, fontweight='bold', pad=15,
                  color='#1B2838')
@@ -400,39 +408,22 @@ def analyze_file(filepath, custom_name=None, output_dir=None, force_y_type=None,
     print(f"  - Raw data points: {len(df)}")
     print(f"  - Wavenumber range: {df['wavenumber'].min():.1f} - {df['wavenumber'].max():.1f} cm-1")
 
-    # [SMART FEATURE] Detect data type
+    # [SMART FEATURE] Detect raw data type
     max_y = df['y_value'].max()
-    if force_y_type == 'transmittance':
-        data_type = 'Transmittance'
-        print(f"  - [FORCED] Processing as Transmittance (%T)")
-    elif force_y_type == 'absorbance':
-        data_type = 'Absorbance'
-        print(f"  - [FORCED] Processing as Absorbance (A)")
-    else:
-        if max_y > 10:
-            data_type = 'Transmittance'
-            print(f"  - [SMART DETECT] Max Y = {max_y:.1f}. Auto-detected format: Transmittance (%T)")
-        else:
-            data_type = 'Absorbance'
-            print(f"  - [SMART DETECT] Max Y = {max_y:.2f}. Auto-detected format: Absorbance (A)")
-
-    # 2. Filter to standard IR range
-    print("\n[2/6] Filtering to standard range (400-4000 cm-1)...")
-    df = filter_range(df)
-    print(f"  - Data points after filtering: {len(df)}")
-
-    # 3 & 4. Process based on detected type
-    if data_type == 'Absorbance':
-        print("\n[3/6] Cleaning saturated absorbance values...")
+    is_raw_absorbance = max_y <= 10
+    
+    if is_raw_absorbance:
+        print(f"  - [SMART DETECT] Max Y = {max_y:.2f}. Raw format is Absorbance (A)")
+        print("\n[3/6] Standardizing to Transmittance (%T) for analysis...")
         df['y_value'] = df['y_value'].clip(lower=0, upper=3.5)
-        print("\n[4/6] Converting Absorbance -> Transmittance & smoothing...")
         raw_transmittance = convert_to_transmittance(df['y_value'].values)
     else:
+        print(f"  - [SMART DETECT] Max Y = {max_y:.1f}. Raw format is Transmittance (%T)")
         print("\n[3/6] Cleaning Transmittance values...")
         df['y_value'] = df['y_value'].clip(lower=0, upper=120)
-        print("\n[4/6] Smoothing Transmittance spectrum...")
         raw_transmittance = df['y_value'].values
 
+    print("\n[4/6] Smoothing spectrum...")
     transmittance = smooth_spectrum(raw_transmittance)
     wavenumber = df['wavenumber'].values
     
@@ -494,12 +485,26 @@ def analyze_file(filepath, custom_name=None, output_dir=None, force_y_type=None,
     except Exception as e:
         print(f"\n  [ERROR] Could not save table: {e}")
 
+    # Determine final plot format
+    plot_type = force_y_type if force_y_type else 'transmittance'
+    
+    if plot_type == 'absorbance':
+        plot_y = 2.0 - np.log10(np.clip(transmittance, 0.001, 100))
+        plot_peak_y = [2.0 - np.log10(max(0.001, t)) for t in peak_t]
+        y_label = 'Absorbance (A)'
+        invert_y = False
+    else:
+        plot_y = transmittance
+        plot_peak_y = peak_t
+        y_label = 'Transmittance (%)'
+        invert_y = True
+
     # Generate plot
     title = name_no_ext.replace('_', ' ')
     png_path = os.path.join(output_dir, f"{name_no_ext}_FTIR_spectrum.png")
     
     try:
-        plot_spectrum(wavenumber, transmittance, peaks, peak_wn, peak_t, title, png_path)
+        plot_spectrum(wavenumber, plot_y, peaks, peak_wn, plot_peak_y, title, png_path, ylabel=y_label, invert_y=invert_y)
     except PermissionError:
         print(f"  [ERROR] Permission denied: Could not save plot '{name_no_ext}_FTIR_spectrum.png'.")
         print("          Is the image file currently open in another program?")
